@@ -11,17 +11,21 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Runtime.InteropServices.WindowsRuntime;
 using Vanara.Extensions;
 using Vanara.PInvoke;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.ApplicationModel.DataTransfer.DragDrop;
 using Windows.Foundation;
 using Windows.Foundation.Collections;
+using Windows.Graphics.Imaging;
 using Windows.Storage;
+using Windows.Storage.Streams;
 using Windows.System;
 using static Files.App.Helpers.PathNormalization;
 using DispatcherQueueTimer = Microsoft.UI.Dispatching.DispatcherQueueTimer;
@@ -1061,6 +1065,59 @@ namespace Files.App.Views.Layouts
 			MainWindow.Instance.SetCanWindowToFront(true);
 		}
 
+		// Should be implemented if we a layout wants to override the image for drag UI
+		private bool dragUIProvided = false;
+		protected virtual async void HandleDragUI(object item, DragUIOverride dragUI) {
+			dragUIProvided = true;
+
+			// Create a simple textblock saying "Text", render it to software bitmap and set it as drag UI content
+
+			var textblock = new TextBlock()
+			{
+				Text = "Text",
+				Width = 100,
+				Height = 100
+			};
+
+			textblock.InvalidateMeasure();
+			await Task.Yield(); // Ensure layout pass is done
+
+			dragUI.SetContentFromBitmapImage(await RenderToBitmapImageAsync(textblock));
+		}
+		public static async Task<BitmapImage> RenderToBitmapImageAsync(UIElement element)
+		{
+			var rtb = new RenderTargetBitmap();
+			await rtb.RenderAsync(element);
+
+			// Raw pixel buffer (BGRA8)
+			IBuffer pixelBuffer = await rtb.GetPixelsAsync();
+
+			int width = rtb.PixelWidth;
+			int height = rtb.PixelHeight;
+
+			using var stream = new InMemoryRandomAccessStream();
+
+			// Encode pixels into PNG
+			var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream);
+			encoder.SetPixelData(
+				BitmapPixelFormat.Bgra8,
+				BitmapAlphaMode.Premultiplied,
+				(uint)width,
+				(uint)height,
+				96, 96,
+				pixelBuffer.ToArray()
+			);
+
+			await encoder.FlushAsync();
+
+			// Load into BitmapImage
+			stream.Seek(0);
+			var bmp = new BitmapImage();
+			await bmp.SetSourceAsync(stream);
+
+			return bmp;
+		}
+
 		private void Item_DragLeave(object sender, DragEventArgs e)
 		{
 			var item = GetItemFromElement(sender);
@@ -1077,6 +1134,7 @@ namespace Files.App.Views.Layouts
 				return;
 
 			DragOperationDeferral? deferral = null;
+			HandleDragUI(null, e.DragUIOverride);
 
 			try
 			{
@@ -1085,6 +1143,7 @@ namespace Files.App.Views.Layouts
 				if (FilesystemHelpers.HasDraggedStorageItems(e.DataView))
 				{
 					e.Handled = true;
+
 
 					var draggedItems = await FilesystemHelpers.GetDraggedStorageItems(e.DataView);
 
@@ -1173,6 +1232,7 @@ namespace Files.App.Views.Layouts
 		{
 			var deferral = e.GetDeferral();
 			e.Handled = true;
+			dragUIProvided = false;
 
 			try
 			{
